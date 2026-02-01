@@ -7,8 +7,8 @@ import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { Badge } from "./components/ui/badge";
 
-import {
-
+import { 
+  
 LineChart,
 Line,
 BarChart,
@@ -19,10 +19,9 @@ Tooltip,
 CartesianGrid,
 ResponsiveContainer,
 ReferenceLine,
+} from "recharts";
 
-}from "recharts";
-
-const STORAGE_KEY = "daytrade_dashboard_text_config_v2";
+const STORAGE_KEY = "daytrade_dashboard_text_config_v3";
 
 /* ------------------------- helpers ------------------------- */
 function toISODate(d) {
@@ -32,22 +31,19 @@ const mm = String(dt.getMonth() + 1).padStart(2, "0");
 const dd = String(dt.getDate()).padStart(2, "0");
 return `${yyyy}-${mm}-${dd}`;
 }
+
 function startOfMonthISO(d = new Date()) {
 const dt = new Date(d);
 dt.setDate(1);
 return toISODate(dt);
 }
+
 function addDaysISO(iso, days) {
 const dt = new Date(iso + "T00:00:00");
 dt.setDate(dt.getDate() + days);
 return toISODate(dt);
 }
 
-/**
- * Parse BR/US decimal:
- *  - aceita: "0,01" "0.01" "1.234,56" "1234,56" "-0,01" "10"
- *  - se terminar com "," ou ".", considera "incompleto" e retorna NaN (não atrapalha digitação)
- */
 function parseNumberLoose(value) {
 if (value === null || value === undefined) return NaN;
 const raw = String(value).trim();
@@ -74,6 +70,7 @@ function fmtBRL(v) {
 if (!Number.isFinite(v)) return "–";
 return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 }
+
 function fmtPct(v) {
 if (!Number.isFinite(v)) return "–";
 return new Intl.NumberFormat("pt-BR", { style: "percent", maximumFractionDigits: 2 }).format(v);
@@ -90,6 +87,7 @@ a.click();
 a.remove();
 URL.revokeObjectURL(url);
 }
+
 function readJSONFile(file) {
 return new Promise((resolve, reject) => {
   const r = new FileReader();
@@ -118,7 +116,6 @@ return Math.max(1, Math.floor(clampNumber(parseNumberLoose(trade.contracts), 1))
 }
 
 function effectiveFees(trade, configNum) {
-// Compatibilidade com dados antigos: se o trade tiver "fees" gravado, usa.
 const legacy = parseNumberLoose(trade.fees);
 if (Number.isFinite(legacy)) return legacy;
 
@@ -171,11 +168,9 @@ if (period.mode === "today") {
   endISO = period.end || null;
 }
 
-// capital total (all time)
 let equityAll = capitalInitial;
 for (const t of sortedAll) equityAll += tradePnl(t, configNum);
 
-// capital no início do período (all time até start-1)
 let equityAtStart = capitalInitial;
 if (startISO) {
   for (const t of sortedAll) {
@@ -192,7 +187,6 @@ const filtered = sortedAll
   .filter((t) => (symFilter === "ALL" ? true : t.symbol === symFilter))
   .filter((t) => (tagFilter === "ALL" ? true : (t.tag || "") === tagFilter));
 
-// curva período
 let equity = equityAtStart;
 const equityPoints = filtered.map((t, idx) => {
   const pnl = tradePnl(t, configNum);
@@ -212,7 +206,6 @@ const avgWin = wins.length ? wins.reduce((s, t) => s + tradePnl(t, configNum), 0
 const avgLoss = losses.length ? losses.reduce((s, t) => s + tradePnl(t, configNum), 0) / losses.length : 0;
 const expectancy = winRate * avgWin - (1 - winRate) * Math.abs(avgLoss);
 
-// max drawdown período
 let peak = equityAtStart;
 let maxDD = 0;
 for (const p of equityPoints) {
@@ -221,7 +214,6 @@ for (const p of equityPoints) {
   maxDD = Math.min(maxDD, dd);
 }
 
-// diário
 const dailyMap = new Map();
 for (const t of filtered) {
   const d = t.date;
@@ -232,7 +224,6 @@ for (const t of filtered) {
 }
 const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
 
-// risco hoje (global, sem filtros)
 const stopDaily = clampNumber(configNum.stopDailyPct, -0.01);
 const targetDaily = clampNumber(configNum.targetDailyPct, 0.01);
 const maxTradesDay = Math.max(1, Math.floor(clampNumber(configNum.maxTradesPerDay, 3)));
@@ -332,10 +323,6 @@ return (
 export default function App() {
 const [tab, setTab] = useState("dashboard");
 
-/**
- * Config em TEXTO para permitir digitar vírgula/ponto sem o campo "sumir".
- * Custos por operação ficam aqui e são usados automaticamente no P&L.
- */
 const [configText, setConfigText] = useState({
   capitalInitial: "50000",
   maxTradesPerDay: "3",
@@ -351,6 +338,10 @@ const [configText, setConfigText] = useState({
 const [trades, setTrades] = useState([]);
 const [period, setPeriod] = useState({ mode: "today", start: "", end: "" });
 const [filters, setFilters] = useState({ symbol: "ALL", tag: "ALL" });
+
+const [histDate, setHistDate] = useState("");
+const [histTag, setHistTag] = useState("ALL");
+const [editingId, setEditingId] = useState(null);
 
 const [form, setForm] = useState({
   date: toISODate(new Date()),
@@ -403,27 +394,46 @@ useEffect(() => {
     if (Array.isArray(p?.trades)) setTrades(p.trades);
     if (p?.period) setPeriod((x) => ({ ...x, ...p.period }));
     if (p?.filters) setFilters((x) => ({ ...x, ...p.filters }));
+    if (p?.tradesTab) {
+      if (typeof p.tradesTab.histDate === "string") setHistDate(p.tradesTab.histDate);
+      if (typeof p.tradesTab.histTag === "string") setHistTag(p.tradesTab.histTag);
+    }
   } catch {}
 }, []);
 
 useEffect(() => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, configText, trades, period, filters }));
-}, [configText, trades, period, filters]);
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({ version: 3, configText, trades, period, filters, tradesTab: { histDate, histTag } })
+  );
+}, [configText, trades, period, filters, histDate, histTag]);
 
 const stats = useMemo(
   () => computeStats({ configNum, trades, period, filters }),
   [configNum, trades, period, filters]
 );
 
-const tagsList = useMemo(
-  () => Array.from(new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
-  [trades]
-);
+const tagsList = useMemo(() => {
+  return Array.from(new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b)
+  );
+}, [trades]);
 
 const pnlPreview = useMemo(() => {
   const t = { ...form };
   return tradePnl(t, configNum);
 }, [form, configNum]);
+
+const histTags = useMemo(() => {
+  const tags = new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean));
+  return Array.from(tags).sort((a, b) => a.localeCompare(b));
+}, [trades]);
+
+const tradesFiltered = useMemo(() => {
+  return trades
+    .filter((t) => (histDate ? t.date === histDate : true))
+    .filter((t) => (histTag === "ALL" ? true : (t.tag || "") === histTag));
+}, [trades, histDate, histTag]);
 
 function addTrade() {
   const t = {
@@ -451,7 +461,14 @@ function deleteTrade(id) {
 }
 
 function exportData() {
-  downloadJSON(`daytrade-dashboard-${toISODate(new Date())}.json`, { version: 2, configText, trades, period, filters });
+  downloadJSON(`daytrade-dashboard-${toISODate(new Date())}.json`, {
+    version: 3,
+    configText,
+    trades,
+    period,
+    filters,
+    tradesTab: { histDate, histTag },
+  });
 }
 
 async function importData(file) {
@@ -460,9 +477,14 @@ async function importData(file) {
   if (Array.isArray(p?.trades)) setTrades(p.trades);
   if (p?.period) setPeriod((x) => ({ ...x, ...p.period }));
   if (p?.filters) setFilters((x) => ({ ...x, ...p.filters }));
+  if (p?.tradesTab) {
+    if (typeof p.tradesTab.histDate === "string") setHistDate(p.tradesTab.histDate);
+    if (typeof p.tradesTab.histTag === "string") setHistTag(p.tradesTab.histTag);
+  }
 }
 
 function clearAll() {
+  // eslint-disable-next-line no-restricted-globals
   if (!confirm("Isso apagará todos os trades e configurações salvas neste navegador. Continuar?")) return;
   localStorage.removeItem(STORAGE_KEY);
   setTrades([]);
@@ -471,7 +493,7 @@ function clearAll() {
     maxTradesPerDay: "3",
     stopDailyPct: "-0,01",
     targetDailyPct: "0,01",
-    riskPerTradePct: "0,25",
+    riskPerTradePct: "0,0025",
     winPointValue: "0,2",
     wdoPointValue: "10",
     winCostPerOp: "0,25",
@@ -479,7 +501,85 @@ function clearAll() {
   });
   setPeriod({ mode: "today", start: "", end: "" });
   setFilters({ symbol: "ALL", tag: "ALL" });
+  setHistDate("");
+  setHistTag("ALL");
+  setEditingId(null);
+  setForm({
+    date: toISODate(new Date()),
+    symbol: "WIN",
+    side: "COMPRA",
+    mode: "points",
+    points: "",
+    contracts: "1",
+    pnl: "",
+    tag: "",
+    notes: "",
+  });
   setTab("dashboard");
+}
+
+function startEdit(tr) {
+  setEditingId(tr.id);
+  setForm((f) => ({
+    ...f,
+    date: tr.date,
+    symbol: tr.symbol || "WIN",
+    side: tr.side || "COMPRA",
+    mode: tr.mode || (tr.points != null ? "points" : "pnl"),
+    points: tr.points ?? "",
+    pnl: tr.pnl ?? "",
+    contracts: String(tr.contracts ?? "1"),
+    tag: tr.tag ?? "",
+    notes: tr.notes ?? "",
+  }));
+  setTab("trades");
+}
+
+function cancelEdit() {
+  setEditingId(null);
+  setForm((f) => ({ ...f, points: "", pnl: "", tag: "", notes: "" }));
+}
+
+function saveEdit() {
+  if (!editingId) return;
+
+  if (form.mode === "points" && !Number.isFinite(parseNumberLoose(form.points))) return;
+  if (form.mode === "pnl" && !Number.isFinite(parseNumberLoose(form.pnl))) return;
+
+  setTrades((prev) =>
+    prev.map((t) => {
+      if (t.id !== editingId) return t;
+      const next = {
+        ...t,
+        date: form.date,
+        symbol: form.symbol,
+        side: form.side,
+        mode: form.mode,
+        contracts: form.contracts,
+        tag: (form.tag || "").trim(),
+        notes: form.notes || "",
+      };
+      if (form.mode === "points") {
+        next.points = form.points;
+        delete next.pnl;
+      } else {
+        next.pnl = form.pnl;
+        delete next.points;
+      }
+      return next;
+    })
+  );
+
+  setEditingId(null);
+  setForm((f) => ({ ...f, points: "", pnl: "", tag: "", notes: "" }));
+}
+
+function deleteAllOfDay(dayISO) {
+  const day = dayISO || toISODate(new Date());
+  // eslint-disable-next-line no-restricted-globals
+  if (!confirm(`Excluir TODAS as operações do dia ${day}?`)) return;
+  setTrades((prev) => prev.filter((t) => t.date !== day));
+  if (editingId) cancelEdit();
 }
 
 const riskApprox = clampNumber(configNum.capitalInitial, 0) * clampNumber(configNum.riskPerTradePct, 0);
@@ -717,24 +817,27 @@ return (
         {/* TRADES */}
         {tab === "trades" && (
           <div
-  style={{
-    marginTop: 16,
-    display: "grid",
-    gridTemplateColumns: "420px 1fr",
-    gap: 16,
-    alignItems: "flex-start",
-  }}
->
-
-            <Card>
+            style={{
+              marginTop: 16,
+              display: "grid",
+              gridTemplateColumns: "420px 1fr",
+              gap: 16,
+              alignItems: "flex-start",
+            }}
+          >
+            <Card style={{ width: "100%" }}>
               <CardHeader>
-                <CardTitle>Novo Trade</CardTitle>
+                <CardTitle>{editingId ? "Editar Trade" : "Novo Trade"}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div style={{ display: "grid", gap: 10 }}>
                   <div>
                     <Label>Data</Label>
-                    <Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+                    <Input
+                      type="date"
+                      value={form.date}
+                      onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                    />
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -803,7 +906,8 @@ return (
                     <div style={{ fontSize: 12, color: "#666" }}>Preview P&L líquido (com custos)</div>
                     <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBRL(pnlPreview)}</div>
                     <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-                      Custos: {fmtBRL(effectiveFees({ symbol: form.symbol, contracts: form.contracts }, configNum))} (contratos × custo/oper.)
+                      Custos:{" "}
+                      {fmtBRL(effectiveFees({ symbol: form.symbol, contracts: form.contracts }, configNum))} (contratos × custo/oper.)
                     </div>
                   </div>
 
@@ -817,21 +921,85 @@ return (
                     />
                   </div>
 
-                  <Button onClick={addTrade}>
-                    <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-                      <Plus size={16} /> Adicionar
-                    </span>
-                  </Button>
+                  {!editingId ? (
+                    <Button onClick={addTrade}>
+                      <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                        <Plus size={16} /> Adicionar
+                      </span>
+                    </Button>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <Button onClick={saveEdit}>
+                        <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                          <Plus size={16} /> Salvar
+                        </span>
+                      </Button>
+                      <Button variant="secondary" onClick={cancelEdit}>
+                        Cancelar
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card style={{ width: "100%" }}>
               <CardHeader>
                 <CardTitle>Histórico</CardTitle>
               </CardHeader>
-              <CardContent>
-                <div style={{ overflow: "auto", border: "1px solid #ddd", borderRadius: 12 }}>
+
+              <CardContent style={{ overflowX: "auto" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 10,
+                    alignItems: "end",
+                    justifyContent: "space-between",
+                    marginBottom: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
+                    <div style={{ width: 180 }}>
+                      <Label>Filtrar por data</Label>
+                      <Input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} />
+                    </div>
+
+                    <div style={{ width: 220 }}>
+                      <Label>Filtrar por tag</Label>
+                      <SelectNative value={histTag} onChange={setHistTag}>
+                        <option value="ALL">Todas as tags</option>
+                        {histTags.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </SelectNative>
+                    </div>
+
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setHistDate("");
+                        setHistTag("ALL");
+                      }}
+                    >
+                      Limpar filtros
+                    </Button>
+                  </div>
+
+                  <Button
+                    variant="destructive"
+                    onClick={() => deleteAllOfDay(histDate || toISODate(new Date()))}
+                    title="Exclui todas as operações do dia filtrado (ou hoje se nenhum filtro)"
+                  >
+                    <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                      <Trash2 size={16} /> Excluir tudo do dia
+                    </span>
+                  </Button>
+                </div>
+
+                <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead style={{ background: "#f7f7f7" }}>
                       <tr>
@@ -842,12 +1010,13 @@ return (
                         <th style={{ textAlign: "right", padding: 10 }}>Custos</th>
                         <th style={{ textAlign: "right", padding: 10 }}>P&L (líq.)</th>
                         <th style={{ textAlign: "left", padding: 10 }}>Tag</th>
-                        <th style={{ padding: 10 }} />
+                        <th style={{ textAlign: "right", padding: 10 }}>Ações</th>
                       </tr>
                     </thead>
+
                     <tbody>
-                      {trades.length ? (
-                        trades.map((t) => (
+                      {tradesFiltered.length ? (
+                        tradesFiltered.map((t) => (
                           <tr key={t.id} style={{ borderTop: "1px solid #eee" }}>
                             <td style={{ padding: 10 }}>{t.date}</td>
                             <td style={{ padding: 10 }}>{t.symbol}</td>
@@ -857,16 +1026,28 @@ return (
                             <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>{fmtBRL(tradePnl(t, configNum))}</td>
                             <td style={{ padding: 10 }}>{t.tag || "–"}</td>
                             <td style={{ padding: 10, textAlign: "right" }}>
-                              <Button variant="ghost" onClick={() => deleteTrade(t.id)} title="Excluir">
-                                <Trash2 size={16} />
-                              </Button>
+                              <div style={{ display: "inline-flex", gap: 8 }}>
+                                <Button variant="secondary" onClick={() => startEdit(t)} title="Editar trade">
+                                  Editar
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  onClick={() => {
+                                    // eslint-disable-next-line no-restricted-globals
+                                    if (confirm("Excluir esta operação?")) deleteTrade(t.id);
+                                  }}
+                                  title="Excluir operação"
+                                >
+                                  Excluir
+                                </Button>
+                              </div>
                             </td>
                           </tr>
                         ))
                       ) : (
                         <tr>
                           <td colSpan={8} style={{ padding: 14, color: "#666" }}>
-                            Nenhum trade ainda.
+                            Nenhum trade encontrado (verifique os filtros).
                           </td>
                         </tr>
                       )}
@@ -1011,9 +1192,10 @@ return (
                 <CardTitle>Notas</CardTitle>
               </CardHeader>
               <CardContent style={{ fontSize: 13, color: "#666", lineHeight: 1.5 }}>
-                <div>     • Campos de Porcentagem, usar sinal (%).</div>
-               
-                
+                <div>• Trades não pedem mais custos; o custo vem da Configuração.</div>
+                <div>• Trades antigos com "fees" continuam funcionando (prioridade para o fee do trade).</div>
+                <div>• Campos aceitam vírgula e ponto (ex.: 0,01 / 0.01 / 1.234,56).</div>
+                <div>• Aba Trades: filtro local por data/tag, edição e exclusão em massa por dia.</div>
               </CardContent>
             </Card>
           </div>
@@ -1023,11 +1205,10 @@ return (
 
     <style>{`
       @media (max-width: 1024px) {
-  div[style*="grid-template-columns: 420px 1fr"] {
-    grid-template-columns: 1fr !important;
-  }
-}
-
+        div[style*="grid-template-columns: repeat(4"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        div[style*="grid-template-columns: repeat(2"] { grid-template-columns: 1fr !important; }
+        div[style*="grid-template-columns: 420px 1fr"] { grid-template-columns: 1fr !important; }
+      }
     `}</style>
   </div>
 );
