@@ -1,556 +1,141 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import { Trash2, Download, Upload, Plus, ShieldAlert, Filter } from "lucide-react";
+import { Download, Upload, Trash2, Plus, Filter, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { Badge } from "./components/ui/badge";
 
-import {
-  
-LineChart,
-Line,
-BarChart,
-Bar,
-XAxis,
-YAxis,
-Tooltip,
-CartesianGrid,
-ResponsiveContainer,
-ReferenceLine,
-} from "recharts";
+const STORAGE_KEY = "diariodaytrade_app_v5";
 
-
-
-const STORAGE_KEY = "daytrade_dashboard_vite_fixed_v4";
-
-/* ------------------------- helpers ------------------------- */
-function toISODate(d) {
-const dt = typeof d === "string" ? new Date(d) : d;
-const yyyy = dt.getFullYear();
-const mm = String(dt.getMonth() + 1).padStart(2, "0");
-const dd = String(dt.getDate()).padStart(2, "0");
-return `${yyyy}-${mm}-${dd}`;
-}
-function addDaysISO(iso, days) {
-const dt = new Date(iso + "T00:00:00");
-dt.setDate(dt.getDate() + days);
-return toISODate(dt);
-}
-function startOfMonthISO(d = new Date()) {
-const dt = new Date(d);
-dt.setDate(1);
-return toISODate(dt);
+/* ===================== Helpers ===================== */
+function toISODate(d = new Date()) {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
-/**
- * Parse BR/US decimal:
- *  - aceita: "0,01" "0.01" "1.234,56" "1234,56" "-0,01" "10"
- *  - se terminar com "," ou ".", retorna NaN (não atrapalha digitação)
- */
-function parseNumberLoose(value) {
-if (value === null || value === undefined) return NaN;
-const raw = String(value).trim();
-if (!raw) return NaN;
+function parseNumberLoose(v) {
+  if (v === "" || v == null) return NaN;
+  let s = String(v).trim();
+  if (!s) return NaN;
+  s = s.replace(/\s+/g, "");
+  if (/[.,]$/.test(s)) return NaN;
 
-const s = raw.replace(/\s+/g, "");
-if (/[,.]$/.test(s)) return NaN;
-
-if (s.includes(",")) {
-  const normalized = s.replace(/\./g, "").replace(",", ".");
-  const n = Number(normalized);
+  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  const n = Number(s);
   return Number.isFinite(n) ? n : NaN;
 }
 
-const n = Number(s);
-return Number.isFinite(n) ? n : NaN;
-}
-
-function clampNumber(n, fallback = 0) {
-return Number.isFinite(n) ? n : fallback;
+function clamp(n, fallback = 0) {
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function fmtBRL(v) {
-if (!Number.isFinite(v)) return "–";
-return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
+  if (!Number.isFinite(v)) return "–";
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 }
+
 function fmtPct(v) {
-if (!Number.isFinite(v)) return "–";
-return new Intl.NumberFormat("pt-BR", { style: "percent", maximumFractionDigits: 2 }).format(v);
+  if (!Number.isFinite(v)) return "–";
+  return new Intl.NumberFormat("pt-BR", { style: "percent", maximumFractionDigits: 2 }).format(v);
 }
 
 function downloadJSON(filename, obj) {
-const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
-const url = URL.createObjectURL(blob);
-const a = document.createElement("a");
-a.href = url;
-a.download = filename;
-document.body.appendChild(a);
-a.click();
-a.remove();
-URL.revokeObjectURL(url);
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
+
 function readJSONFile(file) {
-return new Promise((resolve, reject) => {
-  const r = new FileReader();
-  r.onload = () => {
-    try {
-      resolve(JSON.parse(String(r.result || "{}")));
-    } catch (e) {
-      reject(e);
-    }
-  };
-  r.onerror = reject;
-  r.readAsText(file);
-});
-}
-function inRangeISO(dateISO, startISO, endISOInclusive) {
-if (!startISO && !endISOInclusive) return true;
-if (startISO && dateISO < startISO) return false;
-if (endISOInclusive && dateISO > endISOInclusive) return false;
-return true;
-}
-
-/* ------------------------- trading math ------------------------- */
-function getContracts(trade) {
-return Math.max(1, Math.floor(clampNumber(parseNumberLoose(trade.contracts), 1)));
-}
-function effectiveFees(trade, configNum) {
-const legacy = parseNumberLoose(trade.fees);
-if (Number.isFinite(legacy)) return legacy;
-
-const sym = trade.symbol || "WIN";
-const contracts = getContracts(trade);
-const perOp = clampNumber(configNum.costPerOpBySymbol?.[sym], 0);
-return contracts * perOp;
-}
-function tradePnl(trade, configNum) {
-const mode = trade.mode || (trade.points != null ? "points" : "pnl");
-const fees = effectiveFees(trade, configNum);
-
-if (mode === "points") {
-  const points = clampNumber(parseNumberLoose(trade.points), 0);
-  const contracts = getContracts(trade);
-  const sym = trade.symbol || "WIN";
-  const pv = clampNumber(configNum.pointValueBySymbol?.[sym], 0);
-  return points * pv * contracts - fees;
-}
-
-const pnl = clampNumber(parseNumberLoose(trade.pnl), 0);
-return pnl - fees;
-}
-
-function computeStats({ configNum, trades, period, filters }) {
-const capitalInitial = clampNumber(configNum.capitalInitial, 0);
-const sortedAll = [...trades].sort((a, b) => {
-  const d = (a.date || "").localeCompare(b.date || "");
-  if (d !== 0) return d;
-  return (a.createdAt || 0) - (b.createdAt || 0);
-});
-
-const today = toISODate(new Date());
-let startISO = null;
-let endISO = null;
-
-if (period.mode === "today") {
-  startISO = today;
-  endISO = today;
-} else if (period.mode === "7d") {
-  endISO = today;
-  startISO = addDaysISO(today, -6);
-} else if (period.mode === "mtd") {
-  startISO = startOfMonthISO(new Date());
-  endISO = today;
-} else if (period.mode === "custom") {
-  startISO = period.start || null;
-  endISO = period.end || null;
-}
-
-// all time equity
-let equityAll = capitalInitial;
-for (const t of sortedAll) equityAll += tradePnl(t, configNum);
-
-// equity at period start
-let equityAtStart = capitalInitial;
-if (startISO) {
-  for (const t of sortedAll) {
-    if ((t.date || "") < startISO) equityAtStart += tradePnl(t, configNum);
-    else break;
-  }
-}
-
-const symFilter = filters.symbol || "ALL";
-const tagFilter = filters.tag || "ALL";
-
-const filtered = sortedAll
-  .filter((t) => inRangeISO(t.date || "", startISO, endISO))
-  .filter((t) => (symFilter === "ALL" ? true : t.symbol === symFilter))
-  .filter((t) => (tagFilter === "ALL" ? true : (t.tag || "") === tagFilter));
-
-let equity = equityAtStart;
-const equityPoints = filtered.map((t, idx) => {
-  const pnl = tradePnl(t, configNum);
-  equity += pnl;
-  return { n: idx + 1, date: t.date, equity, pnl };
-});
-
-const periodPnl = equity - equityAtStart;
-const periodPct = equityAtStart > 0 ? periodPnl / equityAtStart : 0;
-
-const wins = filtered.filter((t) => tradePnl(t, configNum) > 0);
-const losses = filtered.filter((t) => tradePnl(t, configNum) < 0);
-const nTrades = filtered.length;
-const winRate = nTrades ? wins.length / nTrades : 0;
-
-const avgWin = wins.length ? wins.reduce((s, t) => s + tradePnl(t, configNum), 0) / wins.length : 0;
-const avgLoss = losses.length ? losses.reduce((s, t) => s + tradePnl(t, configNum), 0) / losses.length : 0;
-const expectancy = winRate * avgWin - (1 - winRate) * Math.abs(avgLoss);
-
-// max drawdown
-let peak = equityAtStart;
-let maxDD = 0;
-for (const p of equityPoints) {
-  peak = Math.max(peak, p.equity);
-  const dd = peak > 0 ? (p.equity - peak) / peak : 0;
-  maxDD = Math.min(maxDD, dd);
-}
-
-// daily
-const dailyMap = new Map();
-for (const t of filtered) {
-  const d = t.date;
-  if (!dailyMap.has(d)) dailyMap.set(d, { date: d, pnl: 0, trades: 0 });
-  const row = dailyMap.get(d);
-  row.pnl += tradePnl(t, configNum);
-  row.trades += 1;
-}
-const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
-
-// today global status (no filters)
-const stopDaily = clampNumber(configNum.stopDailyPct, -0.01);
-const targetDaily = clampNumber(configNum.targetDailyPct, 0.01);
-const maxTradesDay = Math.max(1, Math.floor(clampNumber(configNum.maxTradesPerDay, 3)));
-
-const todayTradesAll = sortedAll.filter((t) => t.date === today);
-const todayPnlAll = todayTradesAll.reduce((s, t) => s + tradePnl(t, configNum), 0);
-
-const todayStart = (() => {
-  let e = capitalInitial;
-  for (const t of sortedAll) {
-    if (t.date < today) e += tradePnl(t, configNum);
-    else break;
-  }
-  return e;
-})();
-const todayPctAll = todayStart > 0 ? todayPnlAll / todayStart : 0;
-
-let todayStatus = "NORMAL";
-let todayBlocked = false;
-if (todayTradesAll.length) {
-  if (todayPctAll <= stopDaily) {
-    todayStatus = "STOP";
-    todayBlocked = true;
-  } else if (todayPctAll >= targetDaily) {
-    todayStatus = "META";
-    todayBlocked = true;
-  } else if (todayTradesAll.length >= maxTradesDay) {
-    todayStatus = "LIMITE";
-    todayBlocked = true;
-  }
-}
-
-return {
-  capitalInitial,
-  capitalCurrent: equityAll,
-  startISO,
-  endISO,
-  periodStartCapital: equityAtStart,
-  periodEndCapital: equity,
-  periodPnl,
-  periodPct,
-  nTrades,
-  winRate,
-  expectancy,
-  maxDD,
-  equityPoints,
-  daily,
-  todayStatus,
-  todayBlocked,
-  todayPnlAll,
-  todayPctAll,
-  todayTradesAll: todayTradesAll.length,
-};
-}
-
-/* ------------------------- small UI ------------------------- */
-function SelectNative({ value, onChange, children }) {
-return (
-  <select
-    value={value}
-    onChange={(e) => onChange(e.target.value)}
-    style={{
-      width: "100%",
-      border: "1px solid #ddd",
-      borderRadius: 12,
-      padding: "8px 10px",
-      fontSize: 13,
-      background: "#fff",
-    }}
-  >
-    {children}
-  </select>
-);
-}
-function StatusPill({ status }) {
-const map = {
-  STOP: { label: "🔴 STOP", variant: "destructive" },
-  META: { label: "🟢 META", variant: "default" },
-  LIMITE: { label: "🟣 LIMITE", variant: "secondary" },
-  NORMAL: { label: "🟡 NORMAL", variant: "outline" },
-};
-const s = map[status] || map.NORMAL;
-return <Badge variant={s.variant}>{s.label}</Badge>;
-}
-function PeriodLabel({ startISO, endISO, mode }) {
-const map = { today: "Hoje", "7d": "Últimos 7 dias", mtd: "MTD (mês)", custom: "Custom" };
-const base = map[mode] || "Período";
-if (!startISO && !endISO) return base;
-if (startISO && endISO) return `${base}: ${startISO} → ${endISO}`;
-if (startISO) return `${base}: desde ${startISO}`;
-return `${base}: até ${endISO}`;
-}
-
-/* ========================= APP ========================= */
-export default function App() {
-const [tab, setTab] = useState("trades");
-
-// Config em TEXTO (aceita vírgula/ponto)
-const [configText, setConfigText] = useState({
-  capitalInitial: "50000",
-  maxTradesPerDay: "3",
-  stopDailyPct: "-0,01",
-  targetDailyPct: "0,01",
-  riskPerTradePct: "0,0025",
-  winPointValue: "0,2",
-  wdoPointValue: "10",
-  winCostPerOp: "0,25",
-  wdoCostPerOp: "1,20",
-});
-
-const [trades, setTrades] = useState([]);
-const [period, setPeriod] = useState({ mode: "today", start: "", end: "" });
-const [filters, setFilters] = useState({ symbol: "ALL", tag: "ALL" });
-
-// Trades: filtros e edição
-const [histDate, setHistDate] = useState("");
-const [histTag, setHistTag] = useState("ALL");
-const [editingId, setEditingId] = useState(null);
-
-const [form, setForm] = useState({
-  date: toISODate(new Date()),
-  symbol: "WIN",
-  mode: "points",
-  points: "",
-  pnl: "",
-  contracts: "1",
-  tag: "",
-});
-
-const configNum = useMemo(() => {
-  const capitalInitial = parseNumberLoose(configText.capitalInitial);
-  const maxTradesPerDay = parseNumberLoose(configText.maxTradesPerDay);
-  const stopDailyPct = parseNumberLoose(configText.stopDailyPct);
-  const targetDailyPct = parseNumberLoose(configText.targetDailyPct);
-  const riskPerTradePct = parseNumberLoose(configText.riskPerTradePct);
-  const winPV = parseNumberLoose(configText.winPointValue);
-  const wdoPV = parseNumberLoose(configText.wdoPointValue);
-  const winFee = parseNumberLoose(configText.winCostPerOp);
-  const wdoFee = parseNumberLoose(configText.wdoCostPerOp);
-
-  return {
-    capitalInitial: Number.isFinite(capitalInitial) ? capitalInitial : 0,
-    maxTradesPerDay: Number.isFinite(maxTradesPerDay) ? Math.max(1, Math.floor(maxTradesPerDay)) : 3,
-    stopDailyPct: Number.isFinite(stopDailyPct) ? stopDailyPct : -0.01,
-    targetDailyPct: Number.isFinite(targetDailyPct) ? targetDailyPct : 0.01,
-    riskPerTradePct: Number.isFinite(riskPerTradePct) ? riskPerTradePct : 0.0025,
-    pointValueBySymbol: {
-      WIN: Number.isFinite(winPV) ? winPV : 0.2,
-      WDO: Number.isFinite(wdoPV) ? wdoPV : 10,
-      OUTRO: 0,
-    },
-    costPerOpBySymbol: {
-      WIN: Number.isFinite(winFee) ? winFee : 0.25,
-      WDO: Number.isFinite(wdoFee) ? wdoFee : 1.2,
-      OUTRO: 0,
-    },
-  };
-}, [configText]);
-
-useEffect(() => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const p = JSON.parse(raw);
-    if (p?.configText) setConfigText((c) => ({ ...c, ...p.configText }));
-    if (Array.isArray(p?.trades)) setTrades(p.trades);
-    if (p?.period) setPeriod((x) => ({ ...x, ...p.period }));
-    if (p?.filters) setFilters((x) => ({ ...x, ...p.filters }));
-    if (p?.tradesTab) {
-      if (typeof p.tradesTab.histDate === "string") setHistDate(p.tradesTab.histDate);
-      if (typeof p.tradesTab.histTag === "string") setHistTag(p.tradesTab.histTag);
-    }
-  } catch {}
-}, []);
-
-useEffect(() => {
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify({ version: 4, configText, trades, period, filters, tradesTab: { histDate, histTag } })
-  );
-}, [configText, trades, period, filters, histDate, histTag]);
-
-const stats = useMemo(
-  () => computeStats({ configNum, trades, period, filters }),
-  [configNum, trades, period, filters]
-);
-
-const tagsList = useMemo(() => {
-  return Array.from(new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b)
-  );
-}, [trades]);
-
-const histTags = useMemo(() => {
-  const tags = new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean));
-  return Array.from(tags).sort((a, b) => a.localeCompare(b));
-}, [trades]);
-
-const tradesFiltered = useMemo(() => {
-  return trades
-    .filter((t) => (histDate ? t.date === histDate : true))
-    .filter((t) => (histTag === "ALL" ? true : (t.tag || "") === histTag));
-}, [trades, histDate, histTag]);
-
-const pnlPreview = useMemo(() => {
-  const t = { ...form };
-  return tradePnl(t, configNum);
-}, [form, configNum]);
-
-function addTrade() {
-  const t = {
-    id: `t_${Date.now()}_${Math.floor(Math.random() * 1e9)}`,
-    date: form.date,
-    symbol: form.symbol,
-    mode: form.mode,
-    contracts: form.contracts,
-    tag: (form.tag || "").trim(),
-    createdAt: Date.now(),
-    ...(form.mode === "points" ? { points: form.points } : { pnl: form.pnl }),
-  };
-
-  if (form.mode === "points" && !Number.isFinite(parseNumberLoose(form.points))) return;
-  if (form.mode === "pnl" && !Number.isFinite(parseNumberLoose(form.pnl))) return;
-
-  setTrades((prev) => [t, ...prev]);
-  setForm((f) => ({ ...f, points: "", pnl: "", tag: "" }));
-}
-
-function deleteTrade(id) {
-  setTrades((prev) => prev.filter((t) => t.id !== id));
-}
-
-function startEdit(tr) {
-  setEditingId(tr.id);
-  setForm((f) => ({
-    ...f,
-    date: tr.date,
-    symbol: tr.symbol || "WIN",
-    mode: tr.mode || (tr.points != null ? "points" : "pnl"),
-    points: tr.points ?? "",
-    pnl: tr.pnl ?? "",
-    contracts: String(tr.contracts ?? "1"),
-    tag: tr.tag ?? "",
-  }));
-  setTab("trades");
-}
-
-function cancelEdit() {
-  setEditingId(null);
-  setForm((f) => ({ ...f, points: "", pnl: "", tag: "" }));
-}
-
-function saveEdit() {
-  if (!editingId) return;
-  if (form.mode === "points" && !Number.isFinite(parseNumberLoose(form.points))) return;
-  if (form.mode === "pnl" && !Number.isFinite(parseNumberLoose(form.pnl))) return;
-
-  setTrades((prev) =>
-    prev.map((t) => {
-      if (t.id !== editingId) return t;
-      const next = {
-        ...t,
-        date: form.date,
-        symbol: form.symbol,
-        mode: form.mode,
-        contracts: form.contracts,
-        tag: (form.tag || "").trim(),
-      };
-      if (form.mode === "points") {
-        next.points = form.points;
-        delete next.pnl;
-      } else {
-        next.pnl = form.pnl;
-        delete next.points;
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        resolve(JSON.parse(String(r.result || "{}")));
+      } catch (e) {
+        reject(e);
       }
-      return next;
-    })
-  );
-
-  setEditingId(null);
-  setForm((f) => ({ ...f, points: "", pnl: "", tag: "" }));
-}
-
-function deleteAllOfDay(dayISO) {
-  const day = dayISO || toISODate(new Date());
-  // eslint-disable-next-line no-restricted-globals
-  if (!confirm(`Excluir TODAS as operações do dia ${day}?`)) return;
-  setTrades((prev) => prev.filter((t) => t.date !== day));
-  if (editingId) cancelEdit();
-}
-
-function exportData() {
-  downloadJSON(`diariodaytrade-${toISODate(new Date())}.json`, {
-    version: 4,
-    configText,
-    trades,
-    period,
-    filters,
-    tradesTab: { histDate, histTag },
+    };
+    r.onerror = reject;
+    r.readAsText(file);
   });
 }
 
-async function importData(file) {
-  const p = await readJSONFile(file);
-  if (p?.configText) setConfigText((c) => ({ ...c, ...p.configText }));
-  if (Array.isArray(p?.trades)) setTrades(p.trades);
-  if (p?.period) setPeriod((x) => ({ ...x, ...p.period }));
-  if (p?.filters) setFilters((x) => ({ ...x, ...p.filters }));
-  if (p?.tradesTab) {
-    if (typeof p.tradesTab.histDate === "string") setHistDate(p.tradesTab.histDate);
-    if (typeof p.tradesTab.histTag === "string") setHistTag(p.tradesTab.histTag);
-  }
+function SelectNative({ value, onChange, children, style }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: "100%",
+        border: "1px solid #ddd",
+        borderRadius: 12,
+        padding: "8px 10px",
+        fontSize: 13,
+        background: "#fff",
+        ...style,
+      }}
+    >
+      {children}
+    </select>
+  );
 }
 
-function clearAll() {
-  // eslint-disable-next-line no-restricted-globals
-  if (!confirm("Isso apagará todos os trades e configurações salvas neste navegador. Continuar?")) return;
-  localStorage.removeItem(STORAGE_KEY);
-  setTrades([]);
-  setEditingId(null);
-  setHistDate("");
-  setHistTag("ALL");
-  setConfigText({
+function StatusPill({ status }) {
+  const map = {
+    STOP: { label: "🔴 STOP", variant: "destructive" },
+    META: { label: "🟢 META", variant: "default" },
+    LIMITE: { label: "🟣 LIMITE", variant: "secondary" },
+    NORMAL: { label: "🟡 NORMAL", variant: "outline" },
+  };
+  const s = map[status] || map.NORMAL;
+  return <Badge variant={s.variant}>{s.label}</Badge>;
+}
+
+/* ===================== Trading math ===================== */
+function getContracts(trade) {
+  const c = parseNumberLoose(trade.contracts);
+  return Math.max(1, Math.floor(clamp(c, 1)));
+}
+
+function tradeFees(trade, configNum) {
+  const sym = trade.symbol || "WIN";
+  const contracts = getContracts(trade);
+  const perOp = clamp(configNum.costPerOpBySymbol?.[sym], 0);
+  return contracts * perOp;
+}
+
+function tradeGross(trade, configNum) {
+  const sym = trade.symbol || "WIN";
+  const contracts = getContracts(trade);
+
+  if (trade.mode === "points") {
+    const points = clamp(parseNumberLoose(trade.points), 0);
+    const pv = clamp(configNum.pointValueBySymbol?.[sym], 0);
+    return points * pv * contracts;
+  }
+
+  return clamp(parseNumberLoose(trade.pnl), 0);
+}
+
+function tradeNet(trade, configNum) {
+  return tradeGross(trade, configNum) - tradeFees(trade, configNum);
+}
+
+/* ===================== App ===================== */
+export default function App() {
+  const [tab, setTab] = useState("trades");
+
+  const [configText, setConfigText] = useState({
     capitalInitial: "50000",
     maxTradesPerDay: "3",
     stopDailyPct: "-0,01",
@@ -561,14 +146,257 @@ function clearAll() {
     winCostPerOp: "0,25",
     wdoCostPerOp: "1,20",
   });
-}
 
-const riskApprox = clampNumber(configNum.capitalInitial, 0) * clampNumber(configNum.riskPerTradePct, 0);
+  const configNum = useMemo(() => {
+    const cap = parseNumberLoose(configText.capitalInitial);
+    const maxT = parseNumberLoose(configText.maxTradesPerDay);
+    const stop = parseNumberLoose(configText.stopDailyPct);
+    const meta = parseNumberLoose(configText.targetDailyPct);
+    const risk = parseNumberLoose(configText.riskPerTradePct);
+    const winPV = parseNumberLoose(configText.winPointValue);
+    const wdoPV = parseNumberLoose(configText.wdoPointValue);
+    const winFee = parseNumberLoose(configText.winCostPerOp);
+    const wdoFee = parseNumberLoose(configText.wdoCostPerOp);
 
-return (
-  <div style={{ minHeight: "100vh", background: "#fff" }}>
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+    return {
+      capitalInitial: Number.isFinite(cap) ? cap : 0,
+      maxTradesPerDay: Number.isFinite(maxT) ? Math.max(1, Math.floor(maxT)) : 3,
+      stopDailyPct: Number.isFinite(stop) ? stop : -0.01,
+      targetDailyPct: Number.isFinite(meta) ? meta : 0.01,
+      riskPerTradePct: Number.isFinite(risk) ? risk : 0.0025,
+      pointValueBySymbol: {
+        WIN: Number.isFinite(winPV) ? winPV : 0.2,
+        WDO: Number.isFinite(wdoPV) ? wdoPV : 10,
+      },
+      costPerOpBySymbol: {
+        WIN: Number.isFinite(winFee) ? winFee : 0.25,
+        WDO: Number.isFinite(wdoFee) ? wdoFee : 1.2,
+      },
+    };
+  }, [configText]);
+
+  const [trades, setTrades] = useState([]);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({
+    date: toISODate(),
+    symbol: "WIN",
+    mode: "points",
+    points: "",
+    pnl: "",
+    contracts: "1",
+    tag: "",
+  });
+
+  const [histDate, setHistDate] = useState("");
+  const [histTag, setHistTag] = useState("ALL");
+
+  /* ---------- Load/Save ---------- */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (p?.configText) setConfigText((c) => ({ ...c, ...p.configText }));
+      if (Array.isArray(p?.trades)) setTrades(p.trades);
+      if (p?.hist) {
+        if (typeof p.hist.date === "string") setHistDate(p.hist.date);
+        if (typeof p.hist.tag === "string") setHistTag(p.hist.tag);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 5,
+        configText,
+        trades,
+        hist: { date: histDate, tag: histTag },
+      })
+    );
+  }, [configText, trades, histDate, histTag]);
+
+  /* ---------- Derived ---------- */
+  const tagsList = useMemo(() => {
+    return Array.from(new Set(trades.map((t) => (t.tag || "").trim()).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+  }, [trades]);
+
+  const tradesFiltered = useMemo(() => {
+    return trades
+      .filter((t) => (histDate ? t.date === histDate : true))
+      .filter((t) => (histTag === "ALL" ? true : (t.tag || "") === histTag));
+  }, [trades, histDate, histTag]);
+
+  const pnlPreview = useMemo(() => {
+    const t = {
+      ...form,
+      mode: form.mode,
+      points: form.points,
+      pnl: form.pnl,
+    };
+    return tradeNet(t, configNum);
+  }, [form, configNum]);
+
+  const today = toISODate();
+  const todayTrades = useMemo(() => trades.filter((t) => t.date === today), [trades, today]);
+  const todayNet = useMemo(() => todayTrades.reduce((s, t) => s + tradeNet(t, configNum), 0), [todayTrades, configNum]);
+
+  const equityTodayStart = useMemo(() => {
+    let e = clamp(configNum.capitalInitial, 0);
+    const sorted = [...trades].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    for (const t of sorted) {
+      if ((t.date || "") < today) e += tradeNet(t, configNum);
+      else break;
+    }
+    return e;
+  }, [trades, configNum, today]);
+
+  const todayPct = equityTodayStart > 0 ? todayNet / equityTodayStart : 0;
+  const todayStatus = useMemo(() => {
+    if (!todayTrades.length) return "NORMAL";
+    if (todayPct <= configNum.stopDailyPct) return "STOP";
+    if (todayPct >= configNum.targetDailyPct) return "META";
+    if (todayTrades.length >= configNum.maxTradesPerDay) return "LIMITE";
+    return "NORMAL";
+  }, [todayTrades.length, todayPct, configNum]);
+
+  const todayBlocked = todayStatus !== "NORMAL";
+
+  /* ---------- Actions ---------- */
+  function resetFormKeepDate() {
+    setForm((f) => ({ ...f, points: "", pnl: "", tag: "" }));
+  }
+
+  function addTrade() {
+    if (form.mode === "points" && !Number.isFinite(parseNumberLoose(form.points))) return;
+    if (form.mode === "pnl" && !Number.isFinite(parseNumberLoose(form.pnl))) return;
+
+    const t = {
+      id: `t_${Date.now()}_${Math.floor(Math.random() * 1e9)}`,
+      createdAt: Date.now(),
+      date: form.date,
+      symbol: form.symbol,
+      mode: form.mode,
+      contracts: form.contracts,
+      tag: (form.tag || "").trim(),
+      ...(form.mode === "points" ? { points: form.points } : { pnl: form.pnl }),
+    };
+
+    setTrades((prev) => [t, ...prev]);
+    resetFormKeepDate();
+  }
+
+  function startEdit(t) {
+    setEditingId(t.id);
+    setForm({
+      date: t.date,
+      symbol: t.symbol,
+      mode: t.mode,
+      points: t.points ?? "",
+      pnl: t.pnl ?? "",
+      contracts: String(t.contracts ?? "1"),
+      tag: t.tag ?? "",
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    resetFormKeepDate();
+  }
+
+  function saveEdit() {
+    if (!editingId) return;
+    if (form.mode === "points" && !Number.isFinite(parseNumberLoose(form.points))) return;
+    if (form.mode === "pnl" && !Number.isFinite(parseNumberLoose(form.pnl))) return;
+
+    setTrades((prev) =>
+      prev.map((t) => {
+        if (t.id !== editingId) return t;
+        const next = {
+          ...t,
+          date: form.date,
+          symbol: form.symbol,
+          mode: form.mode,
+          contracts: form.contracts,
+          tag: (form.tag || "").trim(),
+        };
+        if (form.mode === "points") {
+          next.points = form.points;
+          delete next.pnl;
+        } else {
+          next.pnl = form.pnl;
+          delete next.points;
+        }
+        return next;
+      })
+    );
+    setEditingId(null);
+    resetFormKeepDate();
+  }
+
+  function deleteTrade(id) {
+    // eslint-disable-next-line no-restricted-globals
+    if (!confirm("Excluir esta operação?")) return;
+    setTrades((prev) => prev.filter((t) => t.id !== id));
+    if (editingId === id) cancelEdit();
+  }
+
+  function deleteAllOfDay(dayISO) {
+    const day = dayISO || today;
+    // eslint-disable-next-line no-restricted-globals
+    if (!confirm(`Excluir TODAS as operações do dia ${day}?`)) return;
+    setTrades((prev) => prev.filter((t) => t.date !== day));
+    if (editingId) cancelEdit();
+  }
+
+  function exportData() {
+    downloadJSON(`diariodaytrade-${toISODate()}.json`, {
+      version: 5,
+      configText,
+      trades,
+      hist: { date: histDate, tag: histTag },
+    });
+  }
+
+  async function importData(file) {
+    const p = await readJSONFile(file);
+    if (p?.configText) setConfigText((c) => ({ ...c, ...p.configText }));
+    if (Array.isArray(p?.trades)) setTrades(p.trades);
+    if (p?.hist) {
+      if (typeof p.hist.date === "string") setHistDate(p.hist.date);
+      if (typeof p.hist.tag === "string") setHistTag(p.hist.tag);
+    }
+  }
+
+  function clearAll() {
+    // eslint-disable-next-line no-restricted-globals
+    if (!confirm("Isso apaga trades e configurações salvas neste navegador. Continuar?")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    setTrades([]);
+    setEditingId(null);
+    setHistDate("");
+    setHistTag("ALL");
+    setConfigText({
+      capitalInitial: "50000",
+      maxTradesPerDay: "3",
+      stopDailyPct: "-0,01",
+      targetDailyPct: "0,01",
+      riskPerTradePct: "0,0025",
+      winPointValue: "0,2",
+      wdoPointValue: "10",
+      winCostPerOp: "0,25",
+      wdoCostPerOp: "1,20",
+    });
+  }
+
+  const riskApprox = clamp(configNum.capitalInitial, 0) * clamp(configNum.riskPerTradePct, 0);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#fff" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
         {/* Header */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
           <div>
@@ -613,209 +441,46 @@ return (
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
-          <Button variant={tab === "dashboard" ? "default" : "secondary"} onClick={() => setTab("dashboard")}>
-            Dashboard
-          </Button>
           <Button variant={tab === "trades" ? "default" : "secondary"} onClick={() => setTab("trades")}>
             Trades
           </Button>
           <Button variant={tab === "config" ? "default" : "secondary"} onClick={() => setTab("config")}>
             Configuração
           </Button>
+
+          <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <StatusPill status={todayStatus} />
+            {todayBlocked && (
+              <Badge variant="secondary" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                <ShieldAlert size={14} /> Bloqueado
+              </Badge>
+            )}
+          </div>
         </div>
 
-        {/* DASHBOARD */}
-        {tab === "dashboard" && (
-          <div style={{ marginTop: 16 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <Badge variant="outline" style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-                <Filter size={14} /> <PeriodLabel startISO={stats.startISO} endISO={stats.endISO} mode={period.mode} />
-              </Badge>
-
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <Button variant={period.mode === "today" ? "default" : "secondary"} onClick={() => setPeriod({ mode: "today", start: "", end: "" })}>
-                  Hoje
-                </Button>
-                <Button variant={period.mode === "7d" ? "default" : "secondary"} onClick={() => setPeriod({ mode: "7d", start: "", end: "" })}>
-                  7 dias
-                </Button>
-                <Button variant={period.mode === "mtd" ? "default" : "secondary"} onClick={() => setPeriod({ mode: "mtd", start: "", end: "" })}>
-                  MTD
-                </Button>
-
-                <div style={{ display: "flex", gap: 8, alignItems: "center", border: "1px solid #ddd", padding: 8, borderRadius: 12 }}>
-                  <span style={{ fontSize: 12, color: "#666" }}>Custom</span>
-                  <Input
-                    type="date"
-                    value={period.start}
-                    onChange={(e) => setPeriod((p) => ({ ...p, mode: "custom", start: e.target.value }))}
-                    style={{ height: 34 }}
-                  />
-                  <Input
-                    type="date"
-                    value={period.end}
-                    onChange={(e) => setPeriod((p) => ({ ...p, mode: "custom", end: e.target.value }))}
-                    style={{ height: 34 }}
-                  />
-                </div>
-
-                <div style={{ width: 180 }}>
-                  <SelectNative value={filters.symbol} onChange={(v) => setFilters((f) => ({ ...f, symbol: v }))}>
-                    <option value="ALL">Todos</option>
-                    <option value="WIN">WIN</option>
-                    <option value="WDO">WDO</option>
-                    <option value="OUTRO">OUTRO</option>
-                  </SelectNative>
-                </div>
-
-                <div style={{ width: 220 }}>
-                  <SelectNative value={filters.tag} onChange={(v) => setFilters((f) => ({ ...f, tag: v }))}>
-                    <option value="ALL">Todas as tags</option>
-                    {tagsList.map((tag) => (
-                      <option key={tag} value={tag}>
-                        {tag}
-                      </option>
-                    ))}
-                  </SelectNative>
-                </div>
-
-                <Button variant="secondary" onClick={() => setFilters({ symbol: "ALL", tag: "ALL" })}>
-                  Limpar filtros
-                </Button>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Capital Atual (Total)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtBRL(stats.capitalCurrent)}</div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Inicial: {fmtBRL(stats.capitalInitial)}</div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Resultado (Período)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtBRL(stats.periodPnl)}</div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{fmtPct(stats.periodPct)}</div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Win Rate (Período)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtPct(stats.winRate)}</div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Trades: {stats.nTrades}</div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Status Hoje</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <StatusPill status={stats.todayStatus} />
-                    {stats.todayBlocked && (
-                      <Badge variant="secondary" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                        <ShieldAlert size={14} /> Bloqueado
-                      </Badge>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginTop: 12 }}>
-              <Card>
-                <CardHeader>
-                  <CardTitle>Curva de Capital (Período)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ height: 320 }}>
-                    {stats.equityPoints.length ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={stats.equityPoints} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="n" />
-                          <YAxis domain={["auto", "auto"]} />
-                          <Tooltip
-                            formatter={(value, name) => {
-                              if (name === "equity") return [fmtBRL(Number(value)), "Capital"];
-                              if (name === "pnl") return [fmtBRL(Number(value)), "P&L"];
-                              return [value, name];
-                            }}
-                            labelFormatter={(label) => `Trade #${label}`}
-                          />
-                          <ReferenceLine y={stats.periodStartCapital} strokeDasharray="4 4" />
-                          <Line type="monotone" dataKey="equity" dot={false} strokeWidth={2} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div style={{ height: "100%", display: "grid", placeItems: "center", color: "#666" }}>
-                        Sem trades no período (ou filtrado).
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Resultado Diário (Período)</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div style={{ height: 320 }}>
-                    {stats.daily.length ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={stats.daily} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="date" />
-                          <YAxis />
-                          <Tooltip formatter={(v) => fmtBRL(Number(v))} />
-                          <Bar dataKey="pnl" radius={[8, 8, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div style={{ height: "100%", display: "grid", placeItems: "center", color: "#666" }}>
-                        Sem dados diários no período (ou filtrado).
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        )}
-
-        {/* TRADES */}
+        {/* ===================== TRADES ===================== */}
         {tab === "trades" && (
-          <div className="tradesLayout" style={{ marginTop: 16 }}>
+          <div className="tradesGrid">
             {/* LEFT */}
             <div className="tradesLeft">
-              <Card style={{ width: "100%", overflow: "hidden" }}>
+              <Card style={{ overflow: "hidden" }}>
                 <CardHeader>
                   <CardTitle>{editingId ? "Editar Trade" : "Novo Trade"}</CardTitle>
                 </CardHeader>
+
                 <CardContent>
-                  <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ display: "grid", gap: 12 }}>
                     <div>
                       <Label>Data</Label>
                       <Input
+                        className="inputSmallDate"
                         type="date"
                         value={form.date}
                         onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
                       />
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "end" }}>
                       <div>
                         <Label>Ativo</Label>
                         <SelectNative
@@ -824,19 +489,19 @@ return (
                             setForm((f) => ({
                               ...f,
                               symbol: v,
-                              mode: v === "WIN" || v === "WDO" ? "points" : "pnl",
+                              mode: "points",
                             }))
                           }
                         >
                           <option value="WIN">WIN</option>
                           <option value="WDO">WDO</option>
-                          <option value="OUTRO">OUTRO</option>
                         </SelectNative>
                       </div>
 
                       <div>
                         <Label>Contratos</Label>
                         <Input
+                          className="inputSmallContracts"
                           type="text"
                           inputMode="numeric"
                           value={form.contracts}
@@ -881,7 +546,7 @@ return (
                       <div style={{ fontSize: 12, color: "#666" }}>Preview P&L líquido (com custos)</div>
                       <div style={{ fontSize: 18, fontWeight: 800 }}>{fmtBRL(pnlPreview)}</div>
                       <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-                        Custos: {fmtBRL(effectiveFees({ symbol: form.symbol, contracts: form.contracts }, configNum))} (contratos × custo/oper.)
+                        Custos: {fmtBRL(tradeFees({ symbol: form.symbol, contracts: form.contracts }, configNum))} (contratos × custo/oper.)
                       </div>
                     </div>
 
@@ -903,11 +568,7 @@ return (
                       </Button>
                     ) : (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                        <Button onClick={saveEdit}>
-                          <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-                            <Plus size={16} /> Salvar
-                          </span>
-                        </Button>
+                        <Button onClick={saveEdit}>Salvar</Button>
                         <Button variant="secondary" onClick={cancelEdit}>
                           Cancelar
                         </Button>
@@ -920,7 +581,7 @@ return (
 
             {/* RIGHT */}
             <div className="tradesRight">
-              <Card style={{ width: "100%" }}>
+              <Card>
                 <CardHeader>
                   <CardTitle>Histórico</CardTitle>
                 </CardHeader>
@@ -937,7 +598,7 @@ return (
                     }}
                   >
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
-                      <div style={{ width: 180 }}>
+                      <div style={{ width: 200 }}>
                         <Label>Filtrar por data</Label>
                         <Input type="date" value={histDate} onChange={(e) => setHistDate(e.target.value)} />
                       </div>
@@ -946,7 +607,7 @@ return (
                         <Label>Filtrar por tag</Label>
                         <SelectNative value={histTag} onChange={setHistTag}>
                           <option value="ALL">Todas as tags</option>
-                          {histTags.map((t) => (
+                          {tagsList.map((t) => (
                             <option key={t} value={t}>
                               {t}
                             </option>
@@ -961,13 +622,15 @@ return (
                           setHistTag("ALL");
                         }}
                       >
-                        Limpar filtros
+                        <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                          <Filter size={16} /> Limpar filtros
+                        </span>
                       </Button>
                     </div>
 
                     <Button
                       variant="destructive"
-                      onClick={() => deleteAllOfDay(histDate || toISODate(new Date()))}
+                      onClick={() => deleteAllOfDay(histDate || today)}
                       title="Exclui todas as operações do dia filtrado (ou hoje se nenhum filtro)"
                     >
                       <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
@@ -976,7 +639,7 @@ return (
                     </Button>
                   </div>
 
-                  <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden", minWidth: 640 }}>
+                  <div className="historyTableWrap">
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                       <thead style={{ background: "#f7f7f7" }}>
                         <tr>
@@ -999,22 +662,15 @@ return (
                               <td style={{ padding: 10 }}>{t.symbol}</td>
                               <td style={{ padding: 10, textAlign: "right" }}>{getContracts(t)}</td>
                               <td style={{ padding: 10 }}>{t.mode}</td>
-                              <td style={{ padding: 10, textAlign: "right" }}>{fmtBRL(effectiveFees(t, configNum))}</td>
-                              <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>{fmtBRL(tradePnl(t, configNum))}</td>
+                              <td style={{ padding: 10, textAlign: "right" }}>{fmtBRL(tradeFees(t, configNum))}</td>
+                              <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>{fmtBRL(tradeNet(t, configNum))}</td>
                               <td style={{ padding: 10 }}>{t.tag || "–"}</td>
                               <td style={{ padding: 10, textAlign: "right" }}>
                                 <div style={{ display: "inline-flex", gap: 8 }}>
-                                  <Button variant="secondary" onClick={() => startEdit(t)} title="Editar trade">
+                                  <Button variant="secondary" onClick={() => startEdit(t)}>
                                     Editar
                                   </Button>
-                                  <Button
-                                    variant="destructive"
-                                    onClick={() => {
-                                      // eslint-disable-next-line no-restricted-globals
-                                      if (confirm("Excluir esta operação?")) deleteTrade(t.id);
-                                    }}
-                                    title="Excluir operação"
-                                  >
+                                  <Button variant="destructive" onClick={() => deleteTrade(t.id)}>
                                     Excluir
                                   </Button>
                                 </div>
@@ -1037,13 +693,14 @@ return (
           </div>
         )}
 
-        {/* CONFIG */}
+        {/* ===================== CONFIG ===================== */}
         {tab === "config" && (
           <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Card>
               <CardHeader>
                 <CardTitle>Parâmetros</CardTitle>
               </CardHeader>
+
               <CardContent style={{ display: "grid", gap: 12 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <div>
@@ -1157,58 +814,67 @@ return (
                 <CardTitle>Notas</CardTitle>
               </CardHeader>
               <CardContent style={{ fontSize: 13, color: "#666", lineHeight: 1.5 }}>
-                <div>• Trades não pedem mais custos; o custo vem da Configuração.</div>
-                <div>• Campos aceitam vírgula e ponto (ex.: 0,01 / 0.01 / 1.234,56).</div>
-                <div>• Aba Trades: filtro local por data/tag, edição e exclusão em massa por dia.</div>
+                <div>• Campos aceitam vírgula e ponto (0,01 / 0.01 / 1.234,56).</div>
+                <div>• Custos vêm da Configuração: WIN (R$ 0,25) e WDO (R$ 1,20) por contrato/oper.</div>
+                <div>• Aba Trades: filtros por data/tag, editar, excluir e excluir tudo do dia.</div>
+                <div style={{ marginTop: 10 }}>
+                  <Badge variant="outline">Status hoje</Badge> {fmtBRL(todayNet)} ({fmtPct(todayPct)}) — trades: {todayTrades.length}
+                </div>
               </CardContent>
             </Card>
           </div>
         )}
-      </motion.div>
+      </div>
+
+      <style>{`
+        .tradesGrid{
+          margin-top:16px;
+          display:grid;
+          grid-template-columns: 460px minmax(0, 1fr);
+          gap:16px;
+          align-items:start;
+          isolation:isolate;
+        }
+        .tradesLeft, .tradesRight{
+          min-width:0;
+        }
+        .tradesLeft{
+          overflow:hidden;
+        }
+        .tradesLeft *{
+          min-width:0;
+          box-sizing:border-box;
+        }
+        .tradesLeft input, .tradesLeft select, .tradesLeft textarea{
+          max-width:100%;
+          width:100%;
+          box-sizing:border-box;
+        }
+
+        .inputSmallDate{
+          width: 220px !important;
+          max-width: 220px !important;
+        }
+        .inputSmallContracts{
+          width: 110px !important;
+          max-width: 110px !important;
+          text-align: center;
+        }
+
+        .historyTableWrap{
+          border:1px solid #ddd;
+          border-radius:12px;
+          overflow:hidden;
+          min-width: 720px;
+        }
+
+        @media (max-width: 1024px){
+          .tradesGrid{ grid-template-columns: 1fr; }
+          .inputSmallDate{ width: 100% !important; max-width: 100% !important; }
+          .inputSmallContracts{ width: 100% !important; max-width: 100% !important; text-align:left; }
+          .historyTableWrap{ min-width: 640px; }
+        }
+      `}</style>
     </div>
-
-    {/* CSS do layout da aba Trades */}
-    <style>{`
-      .tradesLayout {
-        display: flex;
-        gap: 16px;
-        align-items: flex-start;
-        margin-top: 16px;
-      }
-      .tradesLeft {
-        flex: 0 0 460px;
-        max-width: 460px;
-        min-width: 360px;
-        overflow: hidden;
-      }
-      .tradesRight {
-        flex: 1 1 0;
-        min-width: 0;
-      }
-
-      @media (max-width: 1024px) {
-        .tradesLayout {
-          flex-direction: column;
-        }
-        .tradesLeft {
-          width: 100%;
-          max-width: 100%;
-          min-width: 0;
-        }
-        .tradesRight {
-          width: 100%;
-        }
-      }
-
-      @media (max-width: 1024px) {
-        div[style*="grid-template-columns: repeat(4"] {
-          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-        }
-        div[style*="grid-template-columns: repeat(2"] {
-          grid-template-columns: 1fr !important;
-        }
-      }
-    `}</style>
-  </div>
-);
+  );
 }
