@@ -471,7 +471,7 @@ function clearAll() {
     maxTradesPerDay: "3",
     stopDailyPct: "-0,01",
     targetDailyPct: "0,01",
-    riskPerTradePct: "0,0025",
+    riskPerTradePct: "0,25",
     winPointValue: "0,2",
     wdoPointValue: "10",
     winCostPerOp: "0,25",
@@ -716,7 +716,16 @@ return (
 
         {/* TRADES */}
         {tab === "trades" && (
-          <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12 }}>
+          <div
+  style={{
+    marginTop: 16,
+    display: "grid",
+    gridTemplateColumns: "420px 1fr",
+    gap: 16,
+    alignItems: "flex-start",
+  }}
+>
+
             <Card>
               <CardHeader>
                 <CardTitle>Novo Trade</CardTitle>
@@ -1014,10 +1023,11 @@ return (
 
     <style>{`
       @media (max-width: 1024px) {
-        div[style*="grid-template-columns: repeat(4"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-        div[style*="grid-template-columns: repeat(2"] { grid-template-columns: 1fr !important; }
-        div[style*="grid-template-columns: 1fr 2fr"] { grid-template-columns: 1fr !important; }
-      }
+  div[style*="grid-template-columns: 420px 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
     `}</style>
   </div>
 );
